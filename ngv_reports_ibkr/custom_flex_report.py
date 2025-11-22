@@ -1,8 +1,13 @@
 from typing import List
 
 import pandas as pd
+import pandera.pandas as pa
 from ib_async.flexreport import FlexReport
+from loguru import logger
 
+from ngv_reports_ibkr.schemas.ibkr_flex_report import (
+    validate_ibkr_flex_report_trades_lazy,
+)
 from ngv_reports_ibkr.transforms import parse_date_series, parse_datetime_series
 
 
@@ -29,6 +34,30 @@ class CustomFlexReport(FlexReport):
         return df
 
     def trades_by_account_id(self, account_id: str) -> pd.DataFrame:
+        """
+        Get trades for a specific account with schema validation.
+
+        Parameters
+        ----------
+        account_id : str
+            The account ID to filter trades for
+
+        Returns
+        -------
+        pd.DataFrame or None
+            Validated DataFrame of trades for the account, or None if no trades exist
+
+        Raises
+        ------
+        ValueError
+            If trades data fails schema validation, with context about the account
+
+        Notes
+        -----
+        This method validates the returned DataFrame against the IBKR flex report
+        trades schema to ensure data integrity. Validation failures may indicate
+        corrupted IBKR data or schema mismatches.
+        """
         df = self.df("Trade")
         # early return if all accounts have no trades
         if (df is None) or (len(df.index) == 0):
@@ -42,7 +71,18 @@ class CustomFlexReport(FlexReport):
         df.dateTime = parse_datetime_series(df.dateTime)
         df.orderTime = parse_datetime_series(df.orderTime)
         df.tradeDate = parse_date_series(df.tradeDate)
-        return df
+
+        # Validate DataFrame against schema
+        try:
+            return validate_ibkr_flex_report_trades_lazy(df)
+        except pa.errors.SchemaErrors as e:
+            logger.error(
+                f"Trades data for account '{account_id}' failed schema validation. "
+                f"This may indicate corrupted IBKR data or a schema mismatch. "
+                f"Found {len(e.failure_cases)} validation error(s). "
+                f"Original error: {str(e)}"
+            )
+            return None
 
     def closed_trades_by_account_id(self, account_id: str) -> pd.DataFrame:
         df = self.trades_by_account_id(account_id)
